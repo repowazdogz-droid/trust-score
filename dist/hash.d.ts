@@ -1,5 +1,5 @@
 /**
- * Trust Score Protocol (TSP-1.0) — hashing and ID generation
+ * Trust Score Protocol (TSP-2.0) — hashing and ID generation
  * Uses Node.js crypto only (zero external dependencies).
  */
 import type { TrustScoreRecord } from './types';

@@ -1,5 +1,5 @@
 /**
- * Trust Score Protocol (TSP-1.0) — main TrustScore class
+ * Trust Score Protocol (TSP-2.0) — main TrustScore class
  */
 
 import type {
@@ -16,11 +16,13 @@ import type {
   DimensionTrend,
   ProtocolSnapshot,
   VerifyResult,
+  ScoreEvaluationOptions,
 } from './types';
-import { schema } from './types';
+import { legacySchema, schema } from './types';
 import { chainHash, recordPayload } from './hash';
 import { calculateScore } from './calculator';
 import { generateCredential, verifyCredential, isCredentialExpired } from './credential';
+import { buildScoreBreakdown, buildTemporalDecay, evidenceClassBreakdown } from './dimensions';
 
 const GENESIS = '0';
 
@@ -59,11 +61,11 @@ export class TrustScore {
     this.harm_record = record;
   }
 
-  calculate(): TrustScoreRecord {
-    return this.recalculate();
+  calculate(options?: ScoreEvaluationOptions): TrustScoreRecord {
+    return this.recalculate(options);
   }
 
-  recalculate(): TrustScoreRecord {
+  recalculate(options?: ScoreEvaluationOptions): TrustScoreRecord {
     const previous_hash =
       this.history.length === 0 ? GENESIS : this.history[this.history.length - 1]!.hash;
     const record = calculateScore(
@@ -75,7 +77,8 @@ export class TrustScore {
       this.consent_record,
       this.harm_record,
       this.history,
-      previous_hash
+      previous_hash,
+      options
     );
     record.hash = chainHash(record.previous_hash, recordPayload(record));
     this.history.push(record);
@@ -109,12 +112,13 @@ export class TrustScore {
         checked_at,
       };
     }
-    const failures: { dimension: TrustDimension; required: number; actual: number }[] = [];
+    const failures: { dimension: TrustDimension; required: number; actual: number; reason?: string }[] = [];
     if (latest.overall_score < policy.min_score) {
       failures.push({
         dimension: 'accuracy',
         required: policy.min_score,
         actual: latest.overall_score,
+        reason: 'min_score',
       });
     }
     const levelMins: Record<string, number> = {
@@ -131,13 +135,70 @@ export class TrustScore {
         dimension: 'calibration',
         required: requiredMin,
         actual: latest.overall_score,
+        reason: 'required_level',
       });
     }
     for (const req of policy.required_dimensions) {
       const dim = latest.dimensions.find((d) => d.dimension === req.dimension);
       const actual = dim?.score ?? 0;
       if (actual < req.min_score) {
-        failures.push({ dimension: req.dimension, required: req.min_score, actual });
+        failures.push({ dimension: req.dimension, required: req.min_score, actual, reason: 'required_dimension' });
+      }
+    }
+    if (policy.min_observed_ratio != null) {
+      const totalEvidence =
+        latest.evidence_breakdown.observed + latest.evidence_breakdown.inferred + latest.evidence_breakdown.theoretical;
+      const observedRatio = totalEvidence > 0 ? latest.evidence_breakdown.observed / totalEvidence : 0;
+      if (observedRatio < policy.min_observed_ratio) {
+        failures.push({
+          dimension: 'accuracy',
+          required: policy.min_observed_ratio,
+          actual: observedRatio,
+          reason: 'min_observed_ratio',
+        });
+      }
+    }
+    if (policy.max_score_age_hours != null) {
+      const scoreAgeHours = (new Date(checked_at).getTime() - new Date(latest.generated_at).getTime()) / (60 * 60 * 1000);
+      if (scoreAgeHours > policy.max_score_age_hours) {
+        failures.push({
+          dimension: 'calibration',
+          required: policy.max_score_age_hours,
+          actual: scoreAgeHours,
+          reason: 'max_score_age_hours',
+        });
+      }
+    }
+    if (policy.required_evidence_classes) {
+      for (const evidenceClass of policy.required_evidence_classes) {
+        const count =
+          evidenceClass === 'OBSERVED'
+            ? latest.evidence_breakdown.observed
+            : evidenceClass === 'INFERRED'
+              ? latest.evidence_breakdown.inferred
+              : latest.evidence_breakdown.theoretical;
+        if (count === 0) {
+          failures.push({
+            dimension: 'accuracy',
+            required: 1,
+            actual: 0,
+            reason: `required_evidence_class:${evidenceClass}`,
+          });
+        }
+      }
+    }
+    if (policy.dimension_freshness) {
+      for (const freshness of policy.dimension_freshness) {
+        const dim = latest.dimensions.find((d) => d.dimension === freshness.dimension);
+        const oldestAge = dim?.score_breakdown.evidence_age_hours.oldest_hours ?? Infinity;
+        if (oldestAge > freshness.max_age_hours) {
+          failures.push({
+            dimension: freshness.dimension,
+            required: freshness.max_age_hours,
+            actual: oldestAge,
+            reason: 'dimension_freshness',
+          });
+        }
       }
     }
     return {
@@ -227,8 +288,10 @@ export class TrustScore {
   }
 
   static fromJSON(json: string): TrustScore {
-    const snapshot: ProtocolSnapshot = JSON.parse(json);
-    if (snapshot.schema !== schema) throw new Error(`Invalid schema: expected ${schema}`);
+    const snapshot = JSON.parse(json) as ProtocolSnapshot;
+    if (snapshot.schema !== schema && snapshot.schema !== legacySchema) {
+      throw new Error(`Invalid schema: expected ${schema} or ${legacySchema}`);
+    }
     const ts = new TrustScore(snapshot.entity_id, snapshot.entity_type);
     const T = ts as unknown as {
       evidence_sources: EvidenceSource[];
@@ -238,14 +301,58 @@ export class TrustScore {
       harm_record: HarmRecord | null;
       history: TrustScoreRecord[];
     };
-    T.evidence_sources = snapshot.evidence_sources ?? [];
+    T.evidence_sources = (snapshot.evidence_sources ?? []).map(normalizeEvidenceSource);
     T.clearpath_summary = snapshot.clearpath_summary ?? null;
     T.cognitive_profile = snapshot.cognitive_profile ?? null;
     T.consent_record = snapshot.consent_record ?? null;
     T.harm_record = snapshot.harm_record ?? null;
-    T.history = snapshot.history ?? [];
+    T.history = snapshot.schema === legacySchema
+      ? migrateLegacyHistory(snapshot.history ?? [], T.evidence_sources)
+      : snapshot.history ?? [];
     return ts;
   }
 }
 
 export { isCredentialExpired };
+
+function normalizeEvidenceSource(source: EvidenceSource): EvidenceSource {
+  return {
+    ...source,
+    evidence_class: source.evidence_class ?? defaultEvidenceClass(source.type),
+  };
+}
+
+function defaultEvidenceClass(type: EvidenceSource['type']) {
+  if (type === 'cognitive_ledger' || type === 'external_attestation') return 'INFERRED';
+  return 'OBSERVED';
+}
+
+function migrateLegacyHistory(history: TrustScoreRecord[], evidenceSources: EvidenceSource[]): TrustScoreRecord[] {
+  let previousHash = GENESIS;
+  return history.map((legacyRecord) => {
+    const generatedAt = legacyRecord.generated_at ?? new Date().toISOString();
+    const temporalDecay = buildTemporalDecay('accuracy', evidenceSources, generatedAt);
+    const migratedDimensions = (legacyRecord.dimensions ?? []).map((dimension) => ({
+      ...dimension,
+      raw_score: dimension.raw_score ?? dimension.score,
+      evidence_breakdown: dimension.evidence_breakdown ?? evidenceClassBreakdown(evidenceSources),
+      temporal_decay: dimension.temporal_decay ?? buildTemporalDecay(dimension.dimension, evidenceSources, generatedAt),
+      score_breakdown: dimension.score_breakdown ?? buildScoreBreakdown(evidenceSources, temporalDecay.function, generatedAt),
+    }));
+    const migrated: TrustScoreRecord = {
+      ...legacyRecord,
+      schema,
+      raw_overall_score: legacyRecord.raw_overall_score ?? legacyRecord.overall_score,
+      dimensions: migratedDimensions,
+      evidence_sources: evidenceSources,
+      evidence_breakdown: legacyRecord.evidence_breakdown ?? evidenceClassBreakdown(evidenceSources),
+      temporal_decay: legacyRecord.temporal_decay ?? temporalDecay,
+      score_breakdown: legacyRecord.score_breakdown ?? buildScoreBreakdown(evidenceSources, temporalDecay.function, generatedAt),
+      previous_hash: previousHash,
+      hash: '',
+    };
+    migrated.hash = chainHash(migrated.previous_hash, recordPayload(migrated));
+    previousHash = migrated.hash;
+    return migrated;
+  });
+}

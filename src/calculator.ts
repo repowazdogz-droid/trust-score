@@ -1,5 +1,5 @@
 /**
- * Trust Score Protocol (TSP-1.0) — score calculation engine
+ * Trust Score Protocol (TSP-2.0) — score calculation engine
  */
 
 import type {
@@ -10,10 +10,14 @@ import type {
   CognitiveProfile,
   ConsentRecord,
   HarmRecord,
+  ScoreEvaluationOptions,
 } from './types';
 import { generateId } from './hash';
 import {
+  buildScoreBreakdown,
+  buildTemporalDecay,
   computeDimensionScores,
+  evidenceClassBreakdown,
   evidenceCountToConfidence,
   DIMENSION_WEIGHTS,
   scoreToLevel,
@@ -31,15 +35,19 @@ export function calculateScore(
   harm_record: HarmRecord | null,
   previousRecords: TrustScoreRecord[],
   previous_hash: string,
-  validity_hours: number = DEFAULT_VALIDITY_HOURS
+  options: number | ScoreEvaluationOptions = DEFAULT_VALIDITY_HOURS
 ): TrustScoreRecord {
+  const normalizedOptions = typeof options === 'number' ? { validity_hours: options } : options;
+  const evaluationDate = normalizedOptions.evaluation_time
+    ? new Date(normalizedOptions.evaluation_time)
+    : new Date();
   const id = generateId();
-  const now = new Date().toISOString();
-  const validUntil = new Date(Date.now() + validity_hours * 60 * 60 * 1000).toISOString();
-  const evidenceCount = evidence_sources.length;
-  const evidenceByDim: Partial<Record<TrustDimension, number>> = {};
+  const now = evaluationDate.toISOString();
+  const validityHours = normalizedOptions.validity_hours ?? DEFAULT_VALIDITY_HOURS;
+  const validUntil = new Date(evaluationDate.getTime() + validityHours * 60 * 60 * 1000).toISOString();
+  const evidenceByDim: Partial<Record<TrustDimension, EvidenceSource[]>> = {};
   for (const d of ['accuracy', 'consistency', 'transparency', 'consent_compliance', 'harm_record', 'bias_awareness', 'calibration', 'scope_adherence'] as const) {
-    evidenceByDim[d] = evidenceCount;
+    evidenceByDim[d] = evidence_sources;
   }
   const previousScores = previousRecords.length > 0 ? previousRecords[previousRecords.length - 1]!.dimensions : [];
   const dimensions = computeDimensionScores(
@@ -49,7 +57,12 @@ export function calculateScore(
     harm_record,
     evidenceByDim,
     previousScores,
-    now
+    now,
+    normalizedOptions.decay_function
+  );
+  const raw_overall_score = dimensions.reduce(
+    (sum, d) => sum + d.raw_score * DIMENSION_WEIGHTS[d.dimension],
+    0
   );
   const overall_score = dimensions.reduce(
     (sum, d) => sum + d.score * DIMENSION_WEIGHTS[d.dimension],
@@ -57,14 +70,21 @@ export function calculateScore(
   );
   const level = scoreToLevel(overall_score);
   const domain_scores: Record<string, number> = {};
+  const temporal_decay = buildTemporalDecay('accuracy', evidence_sources, now, normalizedOptions.decay_function);
+  const score_breakdown = buildScoreBreakdown(evidence_sources, temporal_decay.function, now);
   const record: TrustScoreRecord = {
+    schema: 'TSP-2.0',
     id,
     entity_id,
     entity_type,
+    raw_overall_score,
     overall_score,
     level,
     dimensions,
     evidence_sources: [...evidence_sources],
+    evidence_breakdown: evidenceClassBreakdown(evidence_sources),
+    temporal_decay,
+    score_breakdown,
     domain_scores,
     generated_at: now,
     valid_until: validUntil,

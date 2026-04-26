@@ -1,7 +1,7 @@
 {
   "name": "trust-score",
-  "version": "1.0.1",
-  "description": "Portable, verifiable trust scores for agents and decision-makers (TSP-1.0)",
+  "version": "2.0.0",
+  "description": "Portable, time-aware, evidence-classed trust scores for agents and decision-makers (TSP-2.0)",
   "license": "MIT",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -28,7 +28,9 @@
   "keywords": [
     "omega-protocol",
     "trust-score",
-    "tsp-1.0"
+    "tsp-2.0",
+    "temporal-decay",
+    "evidence-classes"
   ],
   "exports": {
     ".": {

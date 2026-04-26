@@ -1,16 +1,23 @@
 /**
- * Trust Score Protocol (TSP-1.0) — comprehensive test suite
+ * Trust Score Protocol (TSP-2.0) — comprehensive test suite
  */
 
 import { TrustScore, isCredentialExpired } from '../src/trust-score';
 import type { EvidenceSource, TrustPolicy } from '../src/types';
+import { decayMultiplier } from '../src/dimensions';
 
-function evidence(type: EvidenceSource['type'], weight = 0.8): EvidenceSource {
+function evidence(
+  type: EvidenceSource['type'],
+  weight = 0.8,
+  evidence_class: EvidenceSource['evidence_class'] = 'OBSERVED',
+  timestamp = new Date().toISOString()
+): EvidenceSource {
   return {
     type,
     source_id: `src-${Math.random().toString(36).slice(2, 9)}`,
-    timestamp: new Date().toISOString(),
+    timestamp,
     weight,
+    evidence_class,
   };
 }
 
@@ -179,6 +186,63 @@ describe('TrustScore — Overall', () => {
   });
 });
 
+describe('TrustScore — TSP-2.0 evidence classes and decay', () => {
+  test('evidence class assignment is included in record breakdown', () => {
+    const ts = new TrustScore('e1', 'agent');
+    ts.addEvidence(evidence('clearpath_trace', 1, 'OBSERVED'));
+    ts.addEvidence(evidence('cognitive_ledger', 1, 'INFERRED'));
+    ts.addEvidence(evidence('external_attestation', 1, 'THEORETICAL'));
+    const record = ts.calculate({ evaluation_time: '2026-01-01T00:00:00.000Z' });
+    expect(record.schema).toBe('TSP-2.0');
+    expect(record.evidence_breakdown).toEqual({ observed: 1, inferred: 1, theoretical: 1 });
+    expect(record.dimensions[0]!.evidence_breakdown).toEqual({ observed: 1, inferred: 1, theoretical: 1 });
+  });
+
+  test('linear decay reaches zero at configured rate', () => {
+    expect(decayMultiplier({ model: 'linear', decay_per_hour: 0.1 }, 3)).toBeCloseTo(0.7);
+    expect(decayMultiplier({ model: 'linear', decay_per_hour: 0.1 }, 12)).toBe(0);
+  });
+
+  test('exponential decay follows e^(-lambda * age)', () => {
+    expect(decayMultiplier({ model: 'exponential', lambda: 0.5 }, 2)).toBeCloseTo(Math.exp(-1));
+  });
+
+  test('half-life decay halves contribution at one half-life', () => {
+    expect(decayMultiplier({ model: 'half-life', half_life_hours: 24 }, 24)).toBeCloseTo(0.5);
+    expect(decayMultiplier({ model: 'half-life', half_life_hours: 24 }, 48)).toBeCloseTo(0.25);
+  });
+
+  test('decay is applied per evidence based on age', () => {
+    const ts = new TrustScore('e1', 'agent');
+    ts.addEvidence(evidence('clearpath_trace', 1, 'OBSERVED', '2026-01-01T00:00:00.000Z'));
+    ts.addEvidence(evidence('clearpath_trace', 1, 'OBSERVED', '2026-01-02T00:00:00.000Z'));
+    ts.addCognitiveProfile({ calibration: 1, bias_count: 0, growth_trajectory: 0, consistency: 1 });
+    const record = ts.calculate({
+      evaluation_time: '2026-01-03T00:00:00.000Z',
+      decay_function: { model: 'half-life', half_life_hours: 24, baseline: 0.5 },
+    });
+    const calibration = record.dimensions.find((d) => d.dimension === 'calibration')!;
+    expect(calibration.raw_score).toBe(1);
+    expect(calibration.score_breakdown.raw_total).toBe(2);
+    expect(calibration.score_breakdown.total).toBeCloseTo(0.75);
+    expect(calibration.score).toBeCloseTo(0.6875);
+  });
+
+  test('score breakdown matches expected class aggregation', () => {
+    const ts = new TrustScore('e1', 'agent');
+    ts.addEvidence(evidence('clearpath_trace', 1, 'OBSERVED', '2026-01-01T00:00:00.000Z'));
+    ts.addEvidence(evidence('cognitive_ledger', 1, 'INFERRED', '2026-01-01T00:00:00.000Z'));
+    ts.addEvidence(evidence('external_attestation', 1, 'THEORETICAL', '2026-01-01T00:00:00.000Z'));
+    const record = ts.calculate({
+      evaluation_time: '2026-01-01T00:00:00.000Z',
+      decay_function: { model: 'linear', decay_per_hour: 0, baseline: 0.5 },
+    });
+    expect(record.score_breakdown.by_class).toEqual({ observed: 1, inferred: 0.75, theoretical: 0.4 });
+    expect(record.score_breakdown.decay_adjusted).toEqual({ observed: 1, inferred: 0.75, theoretical: 0.4 });
+    expect(record.score_breakdown.total).toBeCloseTo(2.15);
+  });
+});
+
 describe('TrustScore — Credentials', () => {
   test('generate credential with validity', () => {
     const ts = new TrustScore('e1', 'agent');
@@ -309,5 +373,56 @@ describe('TrustScore — Export', () => {
     expect(md).toContain('Trust Score');
     expect(md).toContain('Dimensions');
     expect(md).toContain('accuracy');
+  });
+
+  test('v1 records are readable through explicit migration path', () => {
+    const v1Json = JSON.stringify({
+      schema: 'TSP-1.0',
+      entity_id: 'legacy-agent',
+      entity_type: 'agent',
+      evidence_sources: [
+        {
+          type: 'clearpath_trace',
+          source_id: 'legacy-source',
+          timestamp: '2026-01-01T00:00:00.000Z',
+          weight: 1,
+        },
+      ],
+      clearpath_summary: null,
+      cognitive_profile: null,
+      consent_record: null,
+      harm_record: null,
+      history: [
+        {
+          id: 'legacy-record',
+          entity_id: 'legacy-agent',
+          entity_type: 'agent',
+          overall_score: 0.5,
+          level: 'basic',
+          dimensions: [
+            {
+              dimension: 'accuracy',
+              score: 0.5,
+              confidence: 0.3,
+              evidence_count: 1,
+              trend: 'stable',
+              last_updated: '2026-01-01T00:00:00.000Z',
+            },
+          ],
+          evidence_sources: [],
+          domain_scores: {},
+          generated_at: '2026-01-01T00:00:00.000Z',
+          valid_until: '2026-01-02T00:00:00.000Z',
+          hash: 'legacy-hash',
+          previous_hash: '0',
+        },
+      ],
+    });
+    const restored = TrustScore.fromJSON(v1Json);
+    const migrated = restored.getHistory()[0]!;
+    expect(migrated.schema).toBe('TSP-2.0');
+    expect(migrated.evidence_sources[0]!.evidence_class).toBe('OBSERVED');
+    expect(restored.verify().valid).toBe(true);
+    expect(JSON.parse(restored.toJSON()).schema).toBe('TSP-2.0');
   });
 });

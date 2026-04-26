@@ -1,5 +1,5 @@
 /**
- * Trust Score Protocol (TSP-1.0) — hashing and ID generation
+ * Trust Score Protocol (TSP-2.0) — hashing and ID generation
  * Uses Node.js crypto only (zero external dependencies).
  */
 
@@ -22,11 +22,31 @@ export function generateId(): string {
 }
 
 function dimPayload(d: DimensionScore): string {
-  return `${d.dimension}:${d.score}:${d.confidence}:${d.evidence_count}:${d.trend}:${d.last_updated}`;
+  return [
+    d.dimension,
+    d.raw_score,
+    d.score,
+    d.confidence,
+    d.evidence_count,
+    stableStringify(d.evidence_breakdown),
+    stableStringify(d.temporal_decay),
+    stableStringify(d.score_breakdown),
+    d.trend,
+    d.last_updated,
+  ].join(':');
 }
 
 function evidencePayload(e: EvidenceSource): string {
-  return `${e.type}:${e.source_id}:${e.timestamp}:${e.weight}`;
+  return [
+    e.type,
+    e.source_id,
+    e.timestamp,
+    e.weight,
+    e.evidence_class,
+    e.observed_at ?? '',
+    e.expires_at ?? '',
+    e.confidence ?? '',
+  ].join(':');
 }
 
 export function recordPayload(r: TrustScoreRecord): string {
@@ -37,15 +57,29 @@ export function recordPayload(r: TrustScoreRecord): string {
     .map((k) => `${k}:${r.domain_scores[k]}`)
     .join(';');
   return [
+    r.schema,
     r.id,
     r.entity_id,
     r.entity_type,
+    String(r.raw_overall_score),
     String(r.overall_score),
     r.level,
     dims,
     sources,
+    stableStringify(r.evidence_breakdown),
+    stableStringify(r.temporal_decay),
+    stableStringify(r.score_breakdown),
     domains,
     r.generated_at,
     r.valid_until,
   ].join('\n');
+}
+
+function stableStringify(value: unknown): string {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(stableStringify).join(',')}]`;
+  const entries = Object.entries(value as Record<string, unknown>)
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([key, entryValue]) => `${JSON.stringify(key)}:${stableStringify(entryValue)}`);
+  return `{${entries.join(',')}}`;
 }

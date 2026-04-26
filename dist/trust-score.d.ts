@@ -1,7 +1,7 @@
 /**
- * Trust Score Protocol (TSP-1.0) — main TrustScore class
+ * Trust Score Protocol (TSP-2.0) — main TrustScore class
  */
-import type { TrustScoreRecord, TrustCredential, TrustPolicy, PolicyCheck, EvidenceSource, ClearpathSummary, CognitiveProfile, ConsentRecord, HarmRecord, TrustDimension, DimensionTrend, VerifyResult } from './types';
+import type { TrustScoreRecord, TrustCredential, TrustPolicy, PolicyCheck, EvidenceSource, ClearpathSummary, CognitiveProfile, ConsentRecord, HarmRecord, TrustDimension, DimensionTrend, VerifyResult, ScoreEvaluationOptions } from './types';
 import { isCredentialExpired } from './credential';
 export declare class TrustScore {
     readonly entity_id: string;
@@ -18,8 +18,8 @@ export declare class TrustScore {
     addCognitiveProfile(profile: CognitiveProfile): void;
     addConsentRecord(record: ConsentRecord): void;
     addHarmRecord(record: HarmRecord): void;
-    calculate(): TrustScoreRecord;
-    recalculate(): TrustScoreRecord;
+    calculate(options?: ScoreEvaluationOptions): TrustScoreRecord;
+    recalculate(options?: ScoreEvaluationOptions): TrustScoreRecord;
     generateCredential(issuer_id: string, validity_hours?: number): TrustCredential;
     static verifyCredential(credential: TrustCredential): boolean;
     checkPolicy(policy: TrustPolicy): PolicyCheck;

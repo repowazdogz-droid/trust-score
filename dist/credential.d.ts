@@ -1,5 +1,5 @@
 /**
- * Trust Score Protocol (TSP-1.0) — portable trust credential generation and verification
+ * Trust Score Protocol (TSP-2.0) — portable trust credential generation and verification
  */
 import type { TrustCredential, TrustScoreRecord } from './types';
 export declare function generateCredential(record: TrustScoreRecord, issuer_id: string, validity_hours?: number): TrustCredential;
