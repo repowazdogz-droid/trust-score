@@ -50,6 +50,8 @@ Four capabilities:
 | high | 0.75 - 0.9 | Highly reliable across dimensions |
 | exemplary | 0.9 - 1.0 | Exceptional trust record |
 
+Repository: https://github.com/repowazdogz-droid/trust-score
+
 ## Install
 
 ```bash
