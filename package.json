@@ -1,5 +1,5 @@
 {
-  "name": "trust-score-protocol",
+  "name": "trust-score",
   "version": "1.0.1",
   "description": "Portable, verifiable trust scores for agents and decision-makers (TSP-1.0)",
   "license": "MIT",
